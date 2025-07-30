@@ -1,0 +1,15 @@
+Timestamp,Action,Scheduled Time
+2025-07-30 12:00:32,Daily Shutdown Scheduled,12:01 PM
+2025-07-30 12:06:08,Daily Shutdown Scheduled,12:14 PM
+2025-07-30 12:06:19,Daily shutdown schedule stopped,12:14 PM
+2025-07-30 12:06:19,Daily Shutdown Scheduled,12:25 PM
+2025-07-30 12:06:23,Daily shutdown schedule stopped,12:25 PM
+2025-07-30 12:06:23,Daily Shutdown Scheduled,12:30 PM
+2025-07-30 12:06:25,Daily shutdown schedule stopped,12:30 PM
+2025-07-30 12:25:58,Daily shutdown schedule stopped,N/A
+2025-07-30 12:26:00,Daily shutdown schedule stopped,N/A
+2025-07-30 12:26:45,Daily shutdown schedule stopped,N/A
+2025-07-30 12:26:46,Daily Shutdown Scheduled,12:30 PM
+2025-07-30 12:26:47,Daily shutdown schedule stopped,12:30 PM
+2025-07-30 12:26:49,Daily shutdown schedule stopped,12:30 PM
+2025-07-30 12:27:39,Daily Shutdown Scheduled,01:30 PM
