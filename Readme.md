@@ -28,50 +28,10 @@ Power E is a lightweight shutdown scheduler that uses Windows Task Scheduler to 
 ## 📸 Screenshots
 
 ### Main Interface
-```
-┌─────────────────────────────────────────────────┐
-│ Tools    Help                          [_][□][X]│
-├─────────────────────────────────────────────────┤
-│              ⚡ Power E                         │
-│        Smart Shutdown Scheduler                 │
-├─────────────────────────────────────────────────┤
-│  ┌─ Shutdown Time ───────────────────────┐     │
-│  │  Hour: [06] Minute: [00] ⚪AM ⚫PM    │     │
-│  └───────────────────────────────────────┘     │
-│  ┌─ Settings ────────────────────────────┐     │
-│  │  Warning time: [60] seconds           │     │
-│  └───────────────────────────────────────┘     │
-│  ┌──────────────┐  ┌──────────────┐           │
-│  │ 🚀 Create    │  │ 🗑️ Delete    │           │
-│  │   Schedule   │  │   Schedule   │           │
-│  └──────────────┘  └──────────────┘           │
-│  ┌─ Status ──────────────────────────────┐     │
-│  │ ✅ SCHEDULE ACTIVE                    │     │
-│  │ Shutdown Time: 06:00 PM Daily         │     │
-│  │ Warning Duration: 60 seconds          │     │
-│  └───────────────────────────────────────┘     │
-├─────────────────────────────────────────────────┤
-│  System: Windows | Python: 3.13                │
-└─────────────────────────────────────────────────┘
-```
+![PowerE Main Interface](screenshots/main_interface.png)
 
 ### Warning Popup
-```
-┌─────────────────────────────────────────────────┐
-│        ⚠️ SHUTDOWN WARNING                     │
-├─────────────────────────────────────────────────┤
-│                                                 │
-│      Your computer will shut down soon!         │
-│      Please save your work immediately.         │
-│                                                 │
-│        Shutting down in 60 seconds             │
-│                                                 │
-│  ┌──────────────┐  ┌──────────────┐           │
-│  │ ❌ Cancel    │  │ ⚡ Shutdown  │           │
-│  │   Shutdown   │  │     Now      │           │
-│  └──────────────┘  └──────────────┘           │
-└─────────────────────────────────────────────────┘
-```
+![PowerE Warning Popup](screenshots/warning_popup.png)
 
 ---
 
