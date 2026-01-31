@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Power E - Smart Shutdown Scheduler
-Version 2.0 - Task Scheduler Fix
+Version 2.0 - XML-Based Task Scheduler
 
 Two modes only:
 1. GUI mode (default): Configure and manage scheduled shutdowns
@@ -12,7 +12,7 @@ No background processes. No autostart. Clean and simple.
 
 import tkinter as tk
 from tkinter import messagebox
-from datetime import datetime, timedelta
+from datetime import datetime
 import subprocess
 import json
 import os
@@ -20,12 +20,11 @@ import sys
 import platform
 from pathlib import Path
 import argparse
-import csv
 import traceback
 
 
 class PowerEConfig:
-    """Configuration management"""
+    """Configuration management with log rotation"""
     
     def __init__(self):
         # Use AppData on Windows, home directory on others
@@ -38,17 +37,39 @@ class PowerEConfig:
         self.app_dir.mkdir(parents=True, exist_ok=True)
         
         self.config_file = self.app_dir / "config.json"
-        self.log_file = self.app_dir / "shutdown_log.csv"
-        self.error_log = self.app_dir / "error_log.txt"  # NEW: Error logging
+        self.activity_log = self.app_dir / "activity.log"
+        self.debug_log = self.app_dir / "debug.log"
+        
+        # Rotate logs if they get too large
+        self._rotate_logs()
     
-    def log_error(self, error_msg):
-        """Log errors to file for debugging"""
+    def _rotate_logs(self):
+        """Rotate log files if they exceed 1MB"""
+        max_size = 1024 * 1024  # 1MB
+        
+        for log_file in [self.activity_log, self.debug_log]:
+            if log_file.exists() and log_file.stat().st_size > max_size:
+                try:
+                    # Read the file
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        lines = f.readlines()
+                    
+                    # Keep only last 50% of lines
+                    keep_lines = lines[-len(lines)//2:]
+                    
+                    # Rewrite with rotation notice
+                    with open(log_file, 'w', encoding='utf-8') as f:
+                        f.write(f"=== Log rotated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n\n")
+                        f.writelines(keep_lines)
+                except Exception:
+                    pass
+    
+    def log_debug(self, message):
+        """Log debug information"""
         try:
-            with open(self.error_log, 'a') as f:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Error: {error_msg}\n")
-                f.write(f"{'='*60}\n")
+            with open(self.debug_log, 'a', encoding='utf-8') as f:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                f.write(f"[{timestamp}] {message}\n")
         except:
             pass
     
@@ -66,10 +87,9 @@ class PowerEConfig:
             if self.config_file.exists():
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
-                    # Merge with defaults
                     return {**defaults, **config}
         except Exception as e:
-            self.log_error(f"Config load error: {e}")
+            self.log_debug(f"Config load error: {e}")
         
         return defaults
     
@@ -80,32 +100,28 @@ class PowerEConfig:
                 json.dump(config, f, indent=2)
             return True
         except Exception as e:
-            self.log_error(f"Config save error: {e}")
+            self.log_debug(f"Config save error: {e}")
             return False
     
     def log_action(self, action, details=""):
-        """Log action to CSV"""
+        """Log action to activity log"""
         try:
-            file_exists = self.log_file.exists()
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            username = os.getlogin()
             
-            with open(self.log_file, 'a', newline='') as f:
-                writer = csv.writer(f)
-                
-                if not file_exists:
-                    writer.writerow(['Timestamp', 'Action', 'Details', 'User'])
-                
-                writer.writerow([
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    action,
-                    details,
-                    os.getlogin()
-                ])
+            log_entry = f"[{timestamp}] {action}"
+            if details:
+                log_entry += f" - {details}"
+            log_entry += f" (User: {username})\n"
+            
+            with open(self.activity_log, 'a', encoding='utf-8') as f:
+                f.write(log_entry)
         except Exception as e:
-            self.log_error(f"Action log error: {e}")
+            self.log_debug(f"Action log error: {e}")
 
 
 class TaskSchedulerManager:
-    """Manages Windows Task Scheduler operations"""
+    """Manages Windows Task Scheduler operations with XML configuration"""
     
     TASK_NAME = "PowerE_AutoShutdown"
     
@@ -115,7 +131,7 @@ class TaskSchedulerManager:
         self.python_exe = sys.executable
         self.config_mgr = PowerEConfig()
         
-        # Create the warning batch file if it doesn't exist
+        # Create the warning batch file
         self.warning_bat = self.script_dir / "PowerE_Warning.bat"
         self._create_warning_bat()
     
@@ -123,24 +139,19 @@ class TaskSchedulerManager:
         """Create the PowerE_Warning.bat file"""
         bat_content = '''@echo off
 REM PowerE Warning Launcher
-REM This is called by Task Scheduler to show the shutdown warning
 
-REM Change to script directory
 cd /d "%~dp0"
 
-REM Try pythonw.exe first (no console)
 pythonw.exe PowerE.py --warn
 set EXITCODE=%errorLevel%
 
-REM If pythonw.exe failed, try python.exe
 if %EXITCODE% neq 0 (
     python.exe PowerE.py --warn
     set EXITCODE=%errorLevel%
 )
 
-REM Log to file if error
 if %EXITCODE% neq 0 (
-    echo Error: Exit code %EXITCODE% at %date% %time% >> PowerE_bat_errors.log
+    echo Error: Exit code %EXITCODE% at %date% %time% >> PowerE_errors.log
 )
 
 exit /b %EXITCODE%
@@ -149,10 +160,10 @@ exit /b %EXITCODE%
             with open(self.warning_bat, 'w') as f:
                 f.write(bat_content)
         except Exception as e:
-            self.config_mgr.log_error(f"Failed to create warning bat: {e}")
+            self.config_mgr.log_debug(f"Failed to create warning bat: {e}")
     
     def create_task(self, hour, minute, ampm):
-        """Create scheduled task to run PowerE with --warn flag"""
+        """Create scheduled task using XML configuration"""
         
         # Convert to 24-hour format
         hour_24 = int(hour)
@@ -167,21 +178,81 @@ exit /b %EXITCODE%
         # Delete existing task if any
         self.delete_task()
         
-        # Use the batch file instead of calling Python directly
-        # This avoids the need for /RL HIGHEST and admin privileges
-        cmd = [
-            'schtasks',
-            '/Create',
-            '/TN', self.TASK_NAME,
-            '/TR', f'"{self.warning_bat}"',
-            '/SC', 'DAILY',
-            '/ST', time_str,
-            '/F'  # Force create (overwrites if exists)
-            # No /RL HIGHEST - runs with normal user privileges
-        ]
+        # Get username safely
+        try:
+            username = os.getenv('USERNAME', 'PowerE')
+        except:
+            username = 'PowerE'
+        
+        # Create XML configuration
+        # Settings optimized for reliability across all systems
+        xml_content = f'''<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}</Date>
+    <Author>{username}</Author>
+    <URI>\\{self.TASK_NAME}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>{datetime.now().strftime('%Y-%m-%d')}T{time_str}:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{self.warning_bat}</Command>
+      <WorkingDirectory>{self.script_dir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>'''
+        
+        # Save XML to temp file
+        import tempfile
+        xml_file = Path(tempfile.gettempdir()) / f"{self.TASK_NAME}.xml"
         
         try:
-            self.config_mgr.log_error(f"Creating task with command: {' '.join(cmd)}")
+            self.config_mgr.log_debug(f"Creating task for time: {time_str}")
+            
+            # Write XML file (UTF-16 encoding required by Task Scheduler)
+            with open(xml_file, 'w', encoding='utf-16') as f:
+                f.write(xml_content)
+            
+            # Create task from XML
+            cmd = [
+                'schtasks',
+                '/Create',
+                '/TN', self.TASK_NAME,
+                '/XML', str(xml_file),
+                '/F'  # Force overwrite
+            ]
             
             result = subprocess.run(
                 cmd,
@@ -190,89 +261,53 @@ exit /b %EXITCODE%
                 timeout=10
             )
             
+            # Clean up temp file
+            try:
+                xml_file.unlink()
+            except:
+                pass
+            
             if result.returncode == 0:
-                self.config_mgr.log_error(f"Task created successfully")
+                self.config_mgr.log_debug(f"Task created successfully for {time_str}")
                 return True, "Schedule created successfully"
             else:
-                error_msg = f"Failed to create schedule: {result.stderr}"
-                self.config_mgr.log_error(error_msg)
+                error_msg = f"Failed: {result.stderr.strip()}"
+                self.config_mgr.log_debug(error_msg)
                 return False, error_msg
         
-        except subprocess.TimeoutExpired:
-            error_msg = "Task scheduler command timed out"
-            self.config_mgr.log_error(error_msg)
-            return False, error_msg
         except Exception as e:
-            error_msg = f"Error creating schedule: {str(e)}\n{traceback.format_exc()}"
-            self.config_mgr.log_error(error_msg)
-            return False, f"Error creating schedule: {str(e)}"
+            error_msg = f"Error creating schedule: {str(e)}"
+            self.config_mgr.log_debug(f"{error_msg}\n{traceback.format_exc()}")
+            
+            # Clean up temp file on error
+            try:
+                if xml_file.exists():
+                    xml_file.unlink()
+            except:
+                pass
+            
+            return False, error_msg
     
     def delete_task(self):
         """Delete scheduled task"""
-        cmd = [
-            'schtasks',
-            '/Delete',
-            '/TN', self.TASK_NAME,
-            '/F'  # Force delete without confirmation
-        ]
+        cmd = ['schtasks', '/Delete', '/TN', self.TASK_NAME, '/F']
         
         try:
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=5
-            )
+            subprocess.run(cmd, capture_output=True, timeout=5)
             return True
         except Exception as e:
-            self.config_mgr.log_error(f"Delete task error: {e}")
+            self.config_mgr.log_debug(f"Delete task error: {e}")
             return False
     
     def task_exists(self):
         """Check if task exists"""
-        cmd = [
-            'schtasks',
-            '/Query',
-            '/TN', self.TASK_NAME
-        ]
+        cmd = ['schtasks', '/Query', '/TN', self.TASK_NAME]
         
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=5
-            )
+            result = subprocess.run(cmd, capture_output=True, timeout=5)
             return result.returncode == 0
         except:
             return False
-    
-    def get_task_info(self):
-        """Get task information"""
-        if not self.task_exists():
-            return None
-        
-        cmd = [
-            'schtasks',
-            '/Query',
-            '/TN', self.TASK_NAME,
-            '/FO', 'LIST',
-            '/V'
-        ]
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode == 0:
-                return result.stdout
-            
-        except:
-            pass
-        
-        return None
 
 
 class PowerEGUI:
@@ -302,10 +337,8 @@ class PowerEGUI:
         tools_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(label="Open Log Folder", command=self.open_log_folder)
-        tools_menu.add_command(label="View Error Log", command=self.view_error_log)
         tools_menu.add_command(label="View Activity Log", command=self.view_activity_log)
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Test Warning Popup", command=self.test_warning)
+        tools_menu.add_command(label="View Debug Log", command=self.view_debug_log)
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -314,8 +347,8 @@ class PowerEGUI:
         
         # Center window
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() // 2) - (600 // 2)
-        y = (self.root.winfo_screenheight() // 2) - (520 // 2)
+        x = (self.root.winfo_screenwidth() // 2) - 300
+        y = (self.root.winfo_screenheight() // 2) - 260
         self.root.geometry(f"600x520+{x}+{y}")
     
     def create_widgets(self):
@@ -519,51 +552,38 @@ class PowerEGUI:
         try:
             if platform.system() == "Windows":
                 os.startfile(self.config_mgr.app_dir)
-            elif platform.system() == "Darwin":  # macOS
+            elif platform.system() == "Darwin":
                 subprocess.run(['open', self.config_mgr.app_dir])
-            else:  # Linux
+            else:
                 subprocess.run(['xdg-open', self.config_mgr.app_dir])
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open log folder:\n{e}")
     
-    def view_error_log(self):
-        """View error log"""
-        try:
-            if self.config_mgr.error_log.exists():
-                if platform.system() == "Windows":
-                    os.startfile(self.config_mgr.error_log)
-                else:
-                    subprocess.run(['open', self.config_mgr.error_log])
-            else:
-                messagebox.showinfo("No Errors", "No error log found. Everything is working fine!")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to open error log:\n{e}")
-    
     def view_activity_log(self):
         """View activity log"""
         try:
-            if self.config_mgr.log_file.exists():
+            if self.config_mgr.activity_log.exists():
                 if platform.system() == "Windows":
-                    os.startfile(self.config_mgr.log_file)
+                    os.startfile(self.config_mgr.activity_log)
                 else:
-                    subprocess.run(['open', self.config_mgr.log_file])
+                    subprocess.run(['open', self.config_mgr.activity_log])
             else:
                 messagebox.showinfo("No Activity", "No activity log found yet.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open activity log:\n{e}")
     
-    def test_warning(self):
-        """Test the warning popup"""
-        if messagebox.askyesno(
-            "Test Warning",
-            "This will show the shutdown warning popup.\n\n"
-            "You can test the countdown and cancel functionality.\n"
-            "No actual shutdown will occur.\n\n"
-            "Continue?"
-        ):
-            # Run the warning in test mode
-            warning = ShutdownWarning(test_mode=True)
-            warning.run()
+    def view_debug_log(self):
+        """View debug log"""
+        try:
+            if self.config_mgr.debug_log.exists():
+                if platform.system() == "Windows":
+                    os.startfile(self.config_mgr.debug_log)
+                else:
+                    subprocess.run(['open', self.config_mgr.debug_log])
+            else:
+                messagebox.showinfo("No Debug Info", "No debug log found. Everything is working fine!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open debug log:\n{e}")
     
     def show_about(self):
         """Show about dialog"""
@@ -576,6 +596,7 @@ Features:
 • Daily scheduled shutdowns
 • Customizable warning time
 • Easy to use interface
+• Automatic log rotation
 • Detailed logging
 
 Log Location:
@@ -681,8 +702,7 @@ then click the button to activate."""
                 "Success",
                 f"Shutdown schedule {action}d successfully!\n\n"
                 f"Your computer will show a warning at {hour}:{minute} {ampm} daily.\n"
-                f"You'll have {warning} seconds to cancel if needed.\n\n"
-                f"Tip: Use Tools → Test Warning Popup to verify!"
+                f"You'll have {warning} seconds to cancel if needed."
             )
             
             self.update_status()
@@ -731,11 +751,11 @@ class ShutdownWarning:
         self.test_mode = test_mode
         
         # Log that warning was triggered
-        self.config_mgr.log_action("Warning Shown", f"Countdown: {self.countdown}s, Test: {test_mode}")
+        self.config_mgr.log_action("Warning Shown", f"Countdown: {self.countdown}s")
         
         # Create popup window
         self.root = tk.Tk()
-        self.root.title("Shutdown Warning" + (" - TEST MODE" if test_mode else ""))
+        self.root.title("Shutdown Warning")
         self.root.geometry("600x400")
         self.root.resizable(False, False)
         
@@ -746,8 +766,8 @@ class ShutdownWarning:
         
         # Center window
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() // 2) - (600 // 2)
-        y = (self.root.winfo_screenheight() // 2) - (400 // 2)
+        x = (self.root.winfo_screenwidth() // 2) - 300
+        y = (self.root.winfo_screenheight() // 2) - 200
         self.root.geometry(f"600x400+{x}+{y}")
         
         # Override close button
@@ -760,18 +780,16 @@ class ShutdownWarning:
         """Create warning UI"""
         
         # Warning header
-        header_color = '#3498DB' if self.test_mode else '#E74C3C'
-        header = tk.Frame(self.root, bg=header_color, height=80)
+        header = tk.Frame(self.root, bg='#E74C3C', height=80)
         header.pack(fill='x')
         header.pack_propagate(False)
         
-        header_text = "🧪 TEST MODE - SHUTDOWN WARNING" if self.test_mode else "⚠️ SHUTDOWN WARNING"
         tk.Label(
             header,
-            text=header_text,
-            font=('Arial', 18 if self.test_mode else 20, 'bold'),
+            text="⚠️ SHUTDOWN WARNING",
+            font=('Arial', 20, 'bold'),
             fg='white',
-            bg=header_color
+            bg='#E74C3C'
         ).pack(pady=25)
         
         # Content
@@ -779,23 +797,16 @@ class ShutdownWarning:
         content.pack(fill='both', expand=True)
         
         # Message
-        if self.test_mode:
-            msg = "Testing shutdown warning popup"
-            submsg = "No actual shutdown will occur"
-        else:
-            msg = "Your computer will shut down soon!"
-            submsg = "Please save your work immediately."
-        
         tk.Label(
             content,
-            text=msg,
+            text="Your computer will shut down soon!",
             font=('Arial', 14, 'bold'),
             fg='#2C3E50'
         ).pack(pady=(0, 10))
         
         tk.Label(
             content,
-            text=submsg,
+            text="Please save your work immediately.",
             font=('Arial', 11),
             fg='#7F8C8D'
         ).pack(pady=(0, 20))
@@ -803,9 +814,9 @@ class ShutdownWarning:
         # Countdown
         self.countdown_label = tk.Label(
             content,
-            text=f"{'Test countdown' if self.test_mode else 'Shutting down'} in {self.countdown} seconds",
+            text=f"Shutting down in {self.countdown} seconds",
             font=('Arial', 16, 'bold'),
-            fg='#3498DB' if self.test_mode else '#E74C3C'
+            fg='#E74C3C'
         )
         self.countdown_label.pack(pady=20)
         
@@ -815,7 +826,7 @@ class ShutdownWarning:
         
         cancel_btn = tk.Button(
             button_frame,
-            text="❌ Cancel" + (" Test" if self.test_mode else " Shutdown"),
+            text="❌ Cancel Shutdown",
             command=self.cancel_shutdown,
             font=('Arial', 12, 'bold'),
             bg='#27AE60',
@@ -828,53 +839,42 @@ class ShutdownWarning:
         )
         cancel_btn.pack(side='left', padx=5, expand=True, fill='x')
         
-        if not self.test_mode:
-            shutdown_btn = tk.Button(
-                button_frame,
-                text="⚡ Shutdown Now",
-                command=self.shutdown_now,
-                font=('Arial', 12, 'bold'),
-                bg='#E74C3C',
-                fg='white',
-                padx=20,
-                pady=10,
-                cursor='hand2',
-                relief='raised',
-                bd=3
-            )
-            shutdown_btn.pack(side='left', padx=5, expand=True, fill='x')
+        shutdown_btn = tk.Button(
+            button_frame,
+            text="⚡ Shutdown Now",
+            command=self.shutdown_now,
+            font=('Arial', 12, 'bold'),
+            bg='#E74C3C',
+            fg='white',
+            padx=20,
+            pady=10,
+            cursor='hand2',
+            relief='raised',
+            bd=3
+        )
+        shutdown_btn.pack(side='left', padx=5, expand=True, fill='x')
     
     def start_countdown(self):
         """Start countdown timer"""
         if self.countdown > 0 and not self.cancelled:
-            prefix = "Test countdown" if self.test_mode else "Shutting down"
             self.countdown_label.config(
-                text=f"{prefix} in {self.countdown} seconds"
+                text=f"Shutting down in {self.countdown} seconds"
             )
             self.countdown -= 1
             self.root.after(1000, self.start_countdown)
         elif not self.cancelled:
-            # Time's up
-            if self.test_mode:
-                messagebox.showinfo(
-                    "Test Complete",
-                    "Test countdown completed!\n\n"
-                    "In real mode, the computer would shutdown now."
-                )
-                self.root.destroy()
-            else:
-                self.execute_shutdown()
+            # Time's up - shutdown
+            self.execute_shutdown()
     
     def cancel_shutdown(self):
         """Cancel the shutdown"""
         self.cancelled = True
         self.config_mgr.log_action("Shutdown Cancelled", "User intervention")
         
-        msg = "The test has been cancelled." if self.test_mode else "The shutdown has been cancelled.\n\nThe schedule is still active and will run again tomorrow."
-        
         messagebox.showinfo(
             "Cancelled",
-            msg
+            "The shutdown has been cancelled.\n\n"
+            "The schedule is still active and will run again tomorrow."
         )
         
         self.root.destroy()
@@ -886,29 +886,24 @@ class ShutdownWarning:
     
     def execute_shutdown(self):
         """Execute system shutdown"""
-        self.config_mgr.log_action("Shutdown Executed", "")
+        self.config_mgr.log_action("Shutdown Executed", "Automatic")
         
         try:
             if platform.system() == "Windows":
-                # Shutdown in 5 seconds to give time for cleanup
                 subprocess.run(['shutdown', '/s', '/t', '5'], check=True)
             elif platform.system() == "Linux":
                 subprocess.run(['shutdown', '-h', '+1'], check=True)
-            elif platform.system() == "Darwin":  # macOS
+            elif platform.system() == "Darwin":
                 subprocess.run(['sudo', 'shutdown', '-h', '+1'], check=True)
             
             self.root.destroy()
         
         except Exception as e:
-            error_msg = f"Failed to execute shutdown:\n{str(e)}\n\n"
-            error_msg += "You may need administrator privileges."
+            error_msg = f"Failed to execute shutdown:\n{str(e)}\n\nYou may need administrator privileges."
             
-            self.config_mgr.log_error(f"Shutdown execution failed: {e}\n{traceback.format_exc()}")
+            self.config_mgr.log_debug(f"Shutdown execution failed: {e}\n{traceback.format_exc()}")
             
-            messagebox.showerror(
-                "Shutdown Failed",
-                error_msg
-            )
+            messagebox.showerror("Shutdown Failed", error_msg)
     
     def run(self):
         """Run the warning popup"""
@@ -918,13 +913,13 @@ class ShutdownWarning:
 def main():
     """Main entry point"""
     
-    # Set up logging for any uncaught exceptions
+    # Set up logging for uncaught exceptions
     config_mgr = PowerEConfig()
     
     def exception_handler(exc_type, exc_value, exc_traceback):
         """Log uncaught exceptions"""
         error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-        config_mgr.log_error(f"Uncaught exception:\n{error_msg}")
+        config_mgr.log_debug(f"Uncaught exception:\n{error_msg}")
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
     
     sys.excepthook = exception_handler
@@ -942,17 +937,15 @@ def main():
         config_mgr.log_action("Program Started", f"Mode: {'warn' if args.warn else 'gui'}")
         
         if args.warn:
-            # Warning mode - show countdown and shutdown
             warning = ShutdownWarning(test_mode=False)
             warning.run()
         else:
-            # GUI mode - configure schedules
             root = tk.Tk()
             app = PowerEGUI(root)
             root.mainloop()
     
     except Exception as e:
-        config_mgr.log_error(f"Main error: {e}\n{traceback.format_exc()}")
+        config_mgr.log_debug(f"Main error: {e}\n{traceback.format_exc()}")
         raise
 
 
